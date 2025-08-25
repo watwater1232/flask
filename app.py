@@ -20,7 +20,7 @@ try:
     print("Successfully connected to Redis.")
 except Exception as e:
     print(f"Error connecting to Redis: {e}")
-    # Можно использовать локальное хранилище для отладки, но на Render это не будет работать
+    # Если соединение не удалось, устанавливаем r = None
     r = None
 
 # --- Роуты API ---
@@ -44,6 +44,7 @@ def check_sub():
     
     if end_date_str:
         end_date = datetime.datetime.fromisoformat(end_date_str)
+        # Проверяем, что дата окончания ещё не наступила
         if end_date > datetime.datetime.now():
             return jsonify({"status": "success", "message": "Subscription active"})
     
@@ -52,7 +53,8 @@ def check_sub():
 @app.route('/add_sub', methods=['POST'])
 def add_sub():
     """
-    Добавляет новую подписку на указанное количество дней.
+    Добавляет новую подписку на указанное количество дней,
+    которая автоматически удалится через это время.
     """
     data = request.json
     hwid = data.get('hwid')
@@ -71,8 +73,13 @@ def add_sub():
         # Преобразуем дату в строку для хранения
         end_date_str = end_date.isoformat()
         
-        # Сохраняем в Redis: ключ - HWID, значение - дата окончания
+        # 1. Сначала сохраняем данные: ключ - HWID, значение - дата окончания
         r.set(hwid, end_date_str)
+        
+        # 2. Затем устанавливаем время жизни для этого ключа в секундах
+        seconds_to_expire = days * 24 * 60 * 60
+        r.expire(hwid, seconds_to_expire)
+        
         return jsonify({"status": "success", "message": "Subscription added"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
