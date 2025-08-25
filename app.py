@@ -74,7 +74,6 @@ def add_sub():
 
     return jsonify({"status": "success", "message": f"Subscription added/extended for {hwid}"})
 
-
 # --- Удаление подписки ---
 @app.route("/remove_sub", methods=["POST"])
 def remove_sub():
@@ -92,6 +91,17 @@ def remove_sub():
 
     return jsonify({"status": "success", "message": f"Subscription removed for {hwid}"})
 
+# --- Получение списка всех подписок ---
+@app.route("/subs_list", methods=["GET"])
+def subs_list():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT hwid, end_date FROM subs")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    subs = [{"hwid": hwid, "end_date": end_date} for hwid, end_date in rows]
+    return {"subs": subs}
 
 # --- Главная страница для теста ---
 @app.route("/")
