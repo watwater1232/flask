@@ -7,80 +7,78 @@ import datetime
 app = Flask(__name__)
 
 # --- Подключение к Redis ---
-# Render автоматически создает переменную окружения REDIS_URL.
-# Мы считываем ее, чтобы получить URL для подключения.
 try:
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
-        raise ValueError("REDIS_URL environment variable is not set")
-    # Используем decode_responses=True, чтобы получать строки, а не байты
+        raise ValueError("Переменная окружения REDIS_URL не установлена")
     r = redis.from_url(redis_url, decode_responses=True)
-    # Проверка соединения с Redis
     r.ping()
-    print("Successfully connected to Redis.")
+    print("Успешное подключение к Redis.")
 except Exception as e:
-    print(f"Error connecting to Redis: {e}")
-    # Если соединение не удалось, устанавливаем r = None
+    print(f"Ошибка подключения к Redis: {e}")
     r = None
 
 # --- Роуты API ---
 
-@app.route('/check_sub', methods=['POST'])
-def check_sub():
+@app.route('/check', methods=['POST'])
+def check_subscription():
     """
-    Проверяет, активна ли подписка по HWID.
+    Проверяет статус подписки по HWID и возвращает оставшееся время.
     """
     data = request.json
     hwid = data.get('hwid')
     
     if not hwid:
-        return jsonify({"status": "error", "message": "HWID not provided"}), 400
+        return jsonify({"status": "error", "message": "HWID не предоставлен"}), 400
     
     if r is None:
-        return jsonify({"status": "error", "message": "Database not available"}), 503
+        return jsonify({"status": "error", "message": "База данных недоступна"}), 503
 
-    # Получаем дату окончания подписки из Redis
     end_date_str = r.get(hwid)
     
     if end_date_str:
         end_date = datetime.datetime.fromisoformat(end_date_str)
-        # Проверяем, что дата окончания ещё не наступила
-        if end_date > datetime.datetime.now():
-            return jsonify({"status": "success", "message": "Subscription active"})
+        now = datetime.datetime.now()
+        if end_date > now:
+            time_left = end_date - now
+            days_left = time_left.days
+            hours_left = time_left.seconds // 3600
+            return jsonify({
+                "status": "success",
+                "message": "Подписка активна",
+                "end_date": end_date_str,
+                "days_left": days_left,
+                "hours_left": hours_left
+            })
+        else:
+            return jsonify({"status": "error", "message": "Подписка истекла"})
     
-    return jsonify({"status": "error", "message": "Subscription not found or expired"})
+    return jsonify({"status": "error", "message": "Подписка не найдена"})
 
 @app.route('/add_sub', methods=['POST'])
 def add_sub():
     """
-    Добавляет новую подписку на указанное количество дней,
-    которая автоматически удалится через это время.
+    Добавляет новую подписку на указанное количество дней с автоматическим удалением.
     """
     data = request.json
     hwid = data.get('hwid')
     days = data.get('days')
     
     if not hwid or not days:
-        return jsonify({"status": "error", "message": "HWID or days not provided"}), 400
+        return jsonify({"status": "error", "message": "HWID или days не предоставлены"}), 400
 
     if r is None:
-        return jsonify({"status": "error", "message": "Database not available"}), 503
+        return jsonify({"status": "error", "message": "База данных недоступна"}), 503
     
     try:
         days = int(days)
-        # Рассчитываем дату окончания
         end_date = datetime.datetime.now() + datetime.timedelta(days=days)
-        # Преобразуем дату в строку для хранения
         end_date_str = end_date.isoformat()
         
-        # 1. Сначала сохраняем данные: ключ - HWID, значение - дата окончания
         r.set(hwid, end_date_str)
+        r.expire(hwid, days * 24 * 60 * 60)
         
-        # 2. Затем устанавливаем время жизни для этого ключа в секундах
-        seconds_to_expire = days * 24 * 60 * 60
-        r.expire(hwid, seconds_to_expire)
-        
-        return jsonify({"status": "success", "message": "Subscription added"})
+        return jsonify({"status": "success", "message": "Подписка добавлена"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -92,16 +90,15 @@ def remove_sub():
     data = request.json
     hwid = data.get('hwid')
     if not hwid:
-        return jsonify({"status": "error", "message": "HWID not provided"}), 400
+        return jsonify({"status": "error", "message": "HWID не предоставлен"}), 400
 
     if r is None:
-        return jsonify({"status": "error", "message": "Database not available"}), 503
+        return jsonify({"status": "error", "message": "База данных недоступна"}), 503
     
-    # Удаляем ключ (HWID) из Redis
     if r.delete(hwid) == 1:
-        return jsonify({"status": "success", "message": "Subscription removed"})
+        return jsonify({"status": "success", "message": "Подписка удалена"})
     else:
-        return jsonify({"status": "error", "message": "Subscription not found"}), 404
+        return jsonify({"status": "error", "message": "Подписка не найдена"}), 404
 
 @app.route('/subs_list', methods=['GET'])
 def subs_list():
@@ -109,10 +106,9 @@ def subs_list():
     Возвращает список всех подписок.
     """
     if r is None:
-        return jsonify({"status": "error", "message": "Database not available"}), 503
+        return jsonify({"status": "error", "message": "База данных недоступна"}), 503
 
     try:
-        # Получаем все ключи (HWID) из Redis
         keys = r.keys('*')
         subs_data = []
         for hwid in keys:
@@ -126,5 +122,4 @@ def subs_list():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # Запуск сервера
     app.run(debug=True)
