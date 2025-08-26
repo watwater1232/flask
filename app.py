@@ -2,11 +2,11 @@ import os
 import redis
 from flask import Flask, request, jsonify
 import datetime
+import uuid
 
-# Создание экземпляра Flask-приложения
 app = Flask(__name__)
 
-# --- Подключение к Redis ---
+# Подключение к Redis
 try:
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
@@ -18,13 +18,8 @@ except Exception as e:
     print(f"Ошибка подключения к Redis: {e}")
     r = None
 
-# --- Роуты API ---
-
 @app.route('/check', methods=['POST'])
 def check_subscription():
-    """
-    Проверяет статус подписки по HWID и возвращает оставшееся время.
-    """
     data = request.json
     hwid = data.get('hwid')
     
@@ -34,7 +29,7 @@ def check_subscription():
     if r is None:
         return jsonify({"status": "error", "message": "База данных недоступна"}), 503
 
-    end_date_str = r.get(hwid)
+    end_date_str = r.get(f"sub:{hwid}")
     
     if end_date_str:
         end_date = datetime.datetime.fromisoformat(end_date_str)
@@ -57,26 +52,28 @@ def check_subscription():
 
 @app.route('/add_sub', methods=['POST'])
 def add_sub():
-    """
-    Добавляет новую подписку на указанное количество дней с автоматическим удалением.
-    """
     data = request.json
     hwid = data.get('hwid')
-    days = data.get('days')
+    key = data.get('key')
     
-    if not hwid or not days:
-        return jsonify({"status": "error", "message": "HWID или days не предоставлены"}), 400
+    if not hwid or not key:
+        return jsonify({"status": "error", "message": "HWID или ключ не предоставлены"}), 400
 
     if r is None:
         return jsonify({"status": "error", "message": "База данных недоступна"}), 503
     
     try:
-        days = int(days)
+        key_data = r.get(f"key:{key}")
+        if not key_data:
+            return jsonify({"status": "error", "message": "Неверный ключ"}), 400
+        
+        days = int(key_data)
         end_date = datetime.datetime.now() + datetime.timedelta(days=days)
         end_date_str = end_date.isoformat()
         
-        r.set(hwid, end_date_str)
-        r.expire(hwid, days * 24 * 60 * 60)
+        r.set(f"sub:{hwid}", end_date_str)
+        r.expire(f"sub:{hwid}", days * 24 * 60 * 60)
+        r.delete(f"key:{key}")  # Удаляем ключ после использования
         
         return jsonify({"status": "success", "message": "Подписка добавлена"})
     except Exception as e:
@@ -84,9 +81,6 @@ def add_sub():
 
 @app.route('/remove_sub', methods=['POST'])
 def remove_sub():
-    """
-    Удаляет подписку по HWID.
-    """
     data = request.json
     hwid = data.get('hwid')
     if not hwid:
@@ -95,24 +89,40 @@ def remove_sub():
     if r is None:
         return jsonify({"status": "error", "message": "База данных недоступна"}), 503
     
-    if r.delete(hwid) == 1:
+    if r.delete(f"sub:{hwid}") == 1:
         return jsonify({"status": "success", "message": "Подписка удалена"})
     else:
         return jsonify({"status": "error", "message": "Подписка не найдена"}), 404
 
+@app.route('/generate_key', methods=['POST'])
+def generate_key():
+    data = request.json
+    days = data.get('days')
+    
+    if not days:
+        return jsonify({"status": "error", "message": "Количество дней не указано"}), 400
+
+    if r is None:
+        return jsonify({"status": "error", "message": "База данных недоступна"}), 503
+    
+    try:
+        key = str(uuid.uuid4()).upper()
+        r.set(f"key:{key}", int(days))
+        return jsonify({"status": "success", "message": "Ключ сгенерирован", "key": key})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/subs_list', methods=['GET'])
 def subs_list():
-    """
-    Возвращает список всех подписок.
-    """
     if r is None:
         return jsonify({"status": "error", "message": "База данных недоступна"}), 503
 
     try:
-        keys = r.keys('*')
+        keys = r.keys('sub:*')
         subs_data = []
-        for hwid in keys:
-            end_date_str = r.get(hwid)
+        for key in keys:
+            hwid = key.replace('sub:', '')
+            end_date_str = r.get(key)
             subs_data.append({
                 "hwid": hwid,
                 "end_date": end_date_str
