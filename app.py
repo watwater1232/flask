@@ -11,10 +11,10 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Redis configuration (update with your Redis host)
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")  # Use Render's internal hostname or 'localhost' for local
+# Redis configuration
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")  # Update with Render's internal hostname
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)  # Set in Render dashboard if required
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 
 # Initialize Redis with error handling
 try:
@@ -35,12 +35,24 @@ except redis.ConnectionError as e:
     keys = {}
     subscriptions = {}
 
+@app.route('/test_redis', methods=['GET'])
+def test_redis():
+    """Test Redis connectivity."""
+    try:
+        if use_redis and redis_client:
+            redis_client.ping()
+            return jsonify({"status": "success", "message": "Redis connected"})
+        else:
+            return jsonify({"status": "success", "message": "Using in-memory storage"})
+    except redis.ConnectionError as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/generate_key', methods=['POST'])
 def generate_key():
     """Generate a license key with specified duration."""
     try:
         data = request.json
-        duration = data.get('duration', 30)  # Default 30 days
+        duration = data.get('duration', 30)
         if not isinstance(duration, int) or duration <= 0:
             return jsonify({"status": "error", "message": "Invalid duration"}), 400
         
@@ -155,6 +167,32 @@ def list_keys():
         return jsonify({"status": "success", "keys": formatted_keys})
     except Exception as e:
         logger.error(f"Error in list_keys: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/subscriptions', methods=['GET'])
+def list_subscriptions():
+    """List all active subscriptions (for admin panel)."""
+    try:
+        if use_redis:
+            if redis_client is None:
+                return jsonify({"status": "error", "message": "Redis unavailable"}), 500
+            subs_data = redis_client.hgetall('subscriptions')
+            decoded_subs = {hwid: float(value) for hwid, value in subs_data.items()}
+        else:
+            decoded_subs = {hwid: float(value) for hwid, value in subscriptions.items()}
+            
+        formatted_subs = [
+            {
+                "hwid": hwid,
+                "expiry": datetime.fromtimestamp(expiry).strftime('%Y-%m-%d %H:%M:%S'),
+                "days_left": max(0, int((expiry - datetime.now().timestamp()) / (24 * 3600)))
+            }
+            for hwid, expiry in decoded_subs.items()
+        ]
+        logger.info("Retrieved list of subscriptions")
+        return jsonify({"status": "success", "subscriptions": formatted_subs})
+    except Exception as e:
+        logger.error(f"Error in list_subscriptions: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
